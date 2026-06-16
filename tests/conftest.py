@@ -24,6 +24,28 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)  # -> `import libs.*`
 
 
+def _load_deploy_env() -> None:
+    """Carga deploy/env.yaml en el entorno para que load_settings() funcione en CI.
+
+    Cloud Build no inyecta el .env; las variables viven en deploy/env.yaml (la
+    misma fuente que usa el deploy del job). No pisa variables ya definidas, asi
+    que un .env local o el entorno real tienen prioridad.
+    """
+    path = os.path.join(_REPO_ROOT, "deploy", "env.yaml")
+    if not os.path.exists(path):
+        return
+    try:
+        import yaml
+    except Exception:  # noqa: BLE001 - sin PyYAML no se puede cargar; se deja al .env
+        return
+    with open(path, encoding="utf-8") as fh:
+        for key, value in (yaml.safe_load(fh) or {}).items():
+            os.environ.setdefault(key, str(value))
+
+
+_load_deploy_env()
+
+
 def _use_os_truststore() -> None:
     """Hace que Python use el trust store del SO (donde vive la CA corporativa)."""
     try:
@@ -41,7 +63,10 @@ def cloud():
 
     from libs.config import load_settings
 
-    settings = load_settings()
+    try:
+        settings = load_settings()
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"Config no disponible ({e}). Define deploy/env.yaml o un .env.")
 
     try:
         import google.auth
