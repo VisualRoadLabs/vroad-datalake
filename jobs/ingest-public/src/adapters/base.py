@@ -148,6 +148,6 @@ class BaseAdapter(ABC):
             return []
 
     @abstractmethod
-    def iter_samples(self) -> Iterator[Sample]:
-        """Rinde una `Sample` por imagen del dataset."""
+    def iter_samples(self, splits: set[str] | None = None) -> Iterator[Sample]:
+        """Rinde una `Sample` por imagen. `splits` (opcional) limita a esos splits."""
         raise NotImplementedError

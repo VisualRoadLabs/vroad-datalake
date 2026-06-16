@@ -3,7 +3,7 @@
 Estructura nativa (ya muy cercana al formato de salida):
     train/images/<...>.jpg   train/labels/<...>.lines.json   train/train.txt
     valid/images/...         valid/labels/...                valid/valid.txt
-    test/images/...                                          test/test.txt   (sin labels)
+    test/images/...   (test: solo imagenes; sin labels ni test.txt -> ver ingest_unlabeled)
 
 Mapeo de splits: valid -> val (el resto igual). El .txt nativo lista rutas
 `images/<...>.jpg`; se les quita el prefijo `images/` para no duplicarlo en el
@@ -37,16 +37,12 @@ class CurvelanesAdapter(BaseAdapter):
     # (carpeta nativa, split canonico)
     NATIVE_SPLITS = (("train", "train"), ("valid", "val"), ("test", "test"))
 
-    def iter_samples(self) -> Iterator[Sample]:
+    def iter_samples(self, splits: set[str] | None = None) -> Iterator[Sample]:
+        ingest_unlabeled = bool((self.descriptor.get("options") or {}).get("ingest_unlabeled", False))
         for native, split in self.NATIVE_SPLITS:
-            list_path = self._join(native, f"{native}.txt")
-            if not self.store.exists(list_path):
+            if splits is not None and split not in splits:
                 continue
-            for line in self.store.read_text(list_path).splitlines():
-                entry = line.strip()
-                if not entry:
-                    continue
-                native_img = entry.lstrip("/")           # images/a/1.jpg
+            for native_img in self._entries(native, ingest_unlabeled):
                 rel = self._strip_images(native_img)      # a/1.jpg
                 label_path = self._join(native, self._label_native(native_img))
                 lanes: List[Lane] = []
@@ -64,6 +60,28 @@ class CurvelanesAdapter(BaseAdapter):
                     height=self.height,
                     label_uri=label_path if has_label else None,
                 )
+
+    def _entries(self, native: str, ingest_unlabeled: bool) -> List[str]:
+        """Rutas nativas de imagen (`images/<...>`) de un split.
+
+        Vienen de `<split>.txt`; si no existe y `ingest_unlabeled`, se descubren
+        listando `images/` (caso CurveLanes test: solo imagenes, sin lista ni GT).
+        """
+        list_path = self._join(native, f"{native}.txt")
+        if self.store.exists(list_path):
+            return [
+                line.strip().lstrip("/")
+                for line in self.store.read_text(list_path).splitlines()
+                if line.strip()
+            ]
+        if ingest_unlabeled:
+            root = self._join(native) + "/"
+            return [
+                uri[len(root):]
+                for uri in self._safe_list(self._join(native, "images"))
+                if uri.endswith(self.image_ext) and uri.startswith(root)
+            ]
+        return []
 
     @staticmethod
     def _strip_images(path: str) -> str:

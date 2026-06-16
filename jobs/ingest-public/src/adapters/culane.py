@@ -47,28 +47,31 @@ class CulaneAdapter(BaseAdapter):
     width = 1640
     height = 590
 
-    def iter_samples(self) -> Iterator[Sample]:
+    def iter_samples(self, splits: set[str] | None = None) -> Iterator[Sample]:
         list_dir = self._resolve_list_dir()
         self._detect_file_layout(list_dir)
 
-        train = self._join(list_dir, "train.txt")
-        if self.store.exists(train):
-            yield from self._samples_from(train, "train", None)
+        if splits is None or "train" in splits:
+            train = self._join(list_dir, "train.txt")
+            if self.store.exists(train):
+                yield from self._samples_from(train, "train", None)
 
-        val = self._join(list_dir, "val.txt")
-        if self.store.exists(val):
-            yield from self._samples_from(val, "val", None)
+        if splits is None or "val" in splits:
+            val = self._join(list_dir, "val.txt")
+            if self.store.exists(val):
+                yield from self._samples_from(val, "val", None)
 
-        cat_files = sorted(
-            p for p in self._safe_list(self._join(list_dir, "test_split")) if p.endswith(".txt")
-        )
-        if cat_files:
-            for path in cat_files:
-                yield from self._samples_from(path, "test", self._category_from(path))
-        else:
-            test = self._join(list_dir, "test.txt")
-            if self.store.exists(test):
-                yield from self._samples_from(test, "test", None)
+        if splits is None or "test" in splits:
+            cat_files = sorted(
+                p for p in self._safe_list(self._join(list_dir, "test_split")) if p.endswith(".txt")
+            )
+            if cat_files:
+                for path in cat_files:
+                    yield from self._samples_from(path, "test", self._category_from(path))
+            else:
+                test = self._join(list_dir, "test.txt")
+                if self.store.exists(test):
+                    yield from self._samples_from(test, "test", None)
 
     # --- helpers ---
     def _opt(self, key: str):
