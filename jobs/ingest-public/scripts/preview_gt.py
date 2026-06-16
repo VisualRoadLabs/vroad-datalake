@@ -35,15 +35,15 @@ try:
 except Exception:
     pass
 
-import yaml
+import yaml  # noqa: E402
 
-from libs.config import load_settings
-from libs.gcs import GcsClient
-from src.adapters.base import format_label_json, to_label_json
-from src.registry import get_adapter
+from libs.config import load_settings  # noqa: E402
+from libs.gcs import GcsClient  # noqa: E402
+from src.adapters.base import format_label_json, to_label_json  # noqa: E402
+from src.registry import get_adapter  # noqa: E402
 
 try:
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw  # noqa: E402
 except Exception:
     Image = ImageDraw = None  # type: ignore[assignment]
 
@@ -98,7 +98,7 @@ def report(index: int, sample, gt: dict) -> None:
         )
     tag = "" if sample.has_label else "  [no GT]"
     print(f"[{index}] {leaf}  {sample.rel_path}{tag}")
-    print(f"     lanes={len(lines)} points/lane={[len(l) for l in lines]}{bounds}")
+    print(f"     lanes={len(lines)} points/lane={[len(line) for line in lines]}{bounds}")
 
 
 def compare_to_native(gcs: GcsClient, sample, gt: dict, n_points: int) -> None:
