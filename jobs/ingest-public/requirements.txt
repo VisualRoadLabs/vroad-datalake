@@ -1,0 +1,12 @@
+# Runtime
+google-cloud-storage>=2.16,<3
+google-cloud-bigquery>=3.20,<4
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# Tests / tooling (acceso al cloud en solo lectura)
+# truststore usa el almacen de certificados del SO -> TLS al cloud tras proxy corporativo.
+pytest>=8.0
+truststore>=0.9
+# Pillow: solo para scripts/preview_gt.py (dibuja los carriles sobre la imagen).
+pillow>=10.0

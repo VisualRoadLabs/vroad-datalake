@@ -20,7 +20,7 @@ def test_config_loads():
 def test_gcs_read_only(cloud):
     s = cloud["settings"]
     names = [b.name for b in cloud["storage"].list_blobs(s.bkt_raw_public, max_results=10, timeout=30)]
-    print(f"\n[gcs] {s.bkt_raw_public}: {len(names)} objeto(s); muestra: {names[:5]}")
+    print(f"\n[gcs] {s.bkt_raw_public}: {len(names)} object(s); sample: {names[:5]}")
     assert isinstance(names, list)
 
 
