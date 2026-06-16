@@ -28,6 +28,10 @@ default_split: ""      # train|val|test SOLO si el dataset no trae su propio spl
 options:
   overwrite: false           # true = reprocesa aunque la imagen ya este en tbl_images
   skip_missing_labels: true  # ignora imagenes sin etiqueta en vez de fallar
+  ingest_unlabeled: false    # true = ingesta imagenes SIN etiqueta (copia img + <split>.txt +
+                             # fila en tbl_images, sin .lines.json). Para sets de test sin GT
+                             # (p. ej. CurveLanes test): el adapter lista images/ aunque no
+                             # exista <split>.txt.
 
 # Campos que CALCULA el job (no los rellenes):
 #   num_images, gcs_prefix (normalizado), normalized_at  -> tbl_source_datasets
