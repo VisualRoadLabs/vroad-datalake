@@ -1,0 +1,69 @@
+# =====================================================================
+# cloudbuild.yaml  -  Build + deploy de un job del Data Lake.
+# Comun a los 3 servicios: cada trigger fija _SERVICE e includedFiles.
+#   _SERVICE  = privacy | ingest-public | classify
+#   _DEPLOY   = 'true' solo en el trigger de push a main (PR -> 'false')
+# El build corre como sa-cicd-deployer (ver serviceAccount al final).
+# El escaneo de vulnerabilidades es automatico al hacer push (Container Scanning).
+# =====================================================================
+
+substitutions:
+  _SERVICE: ''                                   # lo fija cada trigger
+  _REGION: us-central1
+  _DATA_PROJECT: vr-prj-prod-data-v1             # donde viven los jobs
+  _AR: us-central1-docker.pkg.dev/vr-prj-dev-cicd-v1/datalake
+  _DEPLOY: 'false'                               # el trigger de main lo pone a 'true'
+
+steps:
+  # 1. Lint + tests del servicio (y del codigo comun). Si falla, no se mergea.
+  - id: test
+    name: python:3.12-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        pip install --quiet -r jobs/${_SERVICE}/requirements.txt pytest ruff
+        ruff check jobs/${_SERVICE} libs
+        PYTHONPATH="jobs/${_SERVICE}:." python -m pytest -q tests/jobs/${_SERVICE} tests/libs
+
+  # 2. Build de la imagen. Contexto = raiz del repo para poder copiar libs/.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - jobs/${_SERVICE}/Dockerfile
+      - -t
+      - ${_AR}/${_SERVICE}:${SHORT_SHA}
+      - .
+
+  # 3. Push al Artifact Registry (tag inmutable = SHA del commit).
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, '${_AR}/${_SERVICE}:${SHORT_SHA}']
+
+  # 4. Deploy: actualizar el job a la nueva imagen. Solo si _DEPLOY=true.
+  #    El job ya existe (creado una vez en deploy/); update solo cambia la imagen,
+  #    conserva la --service-account con la que se creo.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        if [ "${_DEPLOY}" = "true" ]; then
+          gcloud run jobs update job-prod-${_SERVICE}-usc1 \
+            --image="${_AR}/${_SERVICE}:${SHORT_SHA}" \
+            --region="${_REGION}" \
+            --project="${_DATA_PROJECT}"
+        else
+          echo "Build de PR (_DEPLOY=${_DEPLOY}): se omite el despliegue."
+        fi
+
+# Build como SA de despliegue (requiere fijar el destino de logs).
+serviceAccount: projects/vr-prj-dev-cicd-v1/serviceAccounts/sa-cicd-deployer@vr-prj-dev-cicd-v1.iam.gserviceaccount.com
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s
