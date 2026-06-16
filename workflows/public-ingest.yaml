@@ -47,9 +47,7 @@ main:
             body:
               overrides:
                 containerOverrides:
-                  - env:
-                      - name: DATASET
-                        value: '${dataset}'
+                  - args: ['--dataset', '${dataset}']
           result: ingest_exec
         except:
           as: e
