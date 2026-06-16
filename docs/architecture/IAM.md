@@ -22,7 +22,7 @@ personalizados a los que se asocian.
 | `sa-dl-sched-privacy` | Dispara el job de privacy (cada hora) | `sched-prod-privacy-usc1` | `job-prod-privacy-usc1` | dlRunJobExecutor |
 | `sa-dl-sched-classify` | Dispara el workflow de classify (a diario) | `sched-prod-user-classify-usc1` | `wf-prod-classify-usc1` | dlWorkflowsInvoker |
 | `sa-dl-eventarc` | Entrega eventos de descriptor al workflow de ingesta | `evt-prod-public-ingest-usc1` | `wf-prod-public-ingest-usc1`; proyecto | dlWorkflowsInvoker, `roles/eventarc.eventReceiver` (proyecto) |
-| `sa-cicd-deployer` | Construye, sube y despliega (CI/CD) | Triggers de Cloud Build | proyecto de datos (Run/Workflows/Scheduler), cada `sa-dl-*`, repo `datalake` | `roles/run.developer`, `roles/workflows.editor`, `roles/cloudscheduler.admin`, `roles/iam.serviceAccountUser` (por cada SA de runtime), `roles/artifactregistry.writer` (`datalake`) |
+| `sa-cicd-deployer` | Construye, sube y despliega (CI/CD) | Triggers de Cloud Build | proyecto de datos (Run/Workflows/Scheduler), cada `sa-dl-*`, repo `datalake`, logs de build en `vr-prj-dev-cicd-v1` | `roles/run.developer`, `roles/workflows.editor`, `roles/cloudscheduler.admin`, `roles/iam.serviceAccountUser` (por cada SA de runtime), `roles/artifactregistry.writer` (`datalake`), `roles/logging.logWriter` (`vr-prj-dev-cicd-v1`) |
 | Cloud Run service agent | Descarga las imágenes de los jobs al arrancar | todos los Cloud Run jobs | repo `datalake` (pull) | dlArDownloader (sobre `datalake`) |
 | Cloud Storage service agent | Cifra/descifra CMEK y publica eventos de ingesta | GCS (buckets de usuario, notificación de raw-public) | `key-prod-dl-cmek`; `top-prod-ingest-signals` | `roles/cloudkms.cryptoKeyEncrypterDecrypter` (clave), `roles/pubsub.publisher` (topic) |
 
@@ -212,12 +212,14 @@ personalizados a los que se asocian.
 * `vr-prj-prod-data-v1` — desplegar Cloud Run jobs, Workflows y Schedulers.
 * Cada SA de runtime (`sa-dl-*`) — para adjuntarla al recurso que crea.
 * Repo `datalake` del Artifact Registry — para subir las imágenes.
+* `vr-prj-dev-cicd-v1` — escribir los logs de cada build de Cloud Build.
 
 **IAM Roles**
 
 * `roles/run.developer`, `roles/workflows.editor`, `roles/cloudscheduler.admin` (sobre `vr-prj-prod-data-v1`)
 * `roles/iam.serviceAccountUser` sobre **cada** SA de runtime (para poder adjuntarla)
 * `roles/artifactregistry.writer` sobre el repo `datalake` (para subir `<servicio>:$SHORT_SHA`)
+* `roles/logging.logWriter` sobre `vr-prj-dev-cicd-v1`, Cloud Build ejecutándose necesita escribir los logs del build, o el build falla
 
 ---
 
