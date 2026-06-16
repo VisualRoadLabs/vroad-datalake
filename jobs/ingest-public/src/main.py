@@ -45,9 +45,9 @@ from .registry import get_adapter
 log = logging.getLogger("ingest-public")
 
 
-def _epoch_to_bq(epoch: int) -> str:
-    """Epoch -> literal TIMESTAMP de BigQuery (UTC)."""
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+def _epoch_to_bq(epoch: int) -> datetime:
+    """Epoch -> datetime UTC (valor para parametros TIMESTAMP de BigQuery)."""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc)
 
 
 def _notes(descriptor: Dict) -> str | None:
