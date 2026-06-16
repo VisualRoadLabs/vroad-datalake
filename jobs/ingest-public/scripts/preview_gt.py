@@ -83,7 +83,7 @@ def draw_lanes(image_bytes: bytes, lines: list) -> "Image.Image":
     return img
 
 
-def report(index: int, sample, gt: dict) -> None:
+def report(index: int, sample, gt: dict, has_label: bool) -> None:
     """Imprime un resumen rapido de sanity del GT generado."""
     lines = gt["Lines"]
     leaf = f"{sample.split}/{sample.category}" if sample.category else sample.split
@@ -96,17 +96,17 @@ def report(index: int, sample, gt: dict) -> None:
             f" | x[{min(xs)}..{max(xs)}] y[{min(ys)}..{max(ys)}] "
             f"dims {sample.width}x{sample.height} in_bounds={in_bounds}"
         )
-    tag = "" if sample.has_label else "  [no GT]"
+    tag = "" if has_label else "  [no GT]"
     print(f"[{index}] {leaf}  {sample.rel_path}{tag}")
     print(f"     lanes={len(lines)} points/lane={[len(line) for line in lines]}{bounds}")
 
 
-def compare_to_native(gcs: GcsClient, sample, gt: dict, n_points: int) -> None:
+def compare_to_native(gcs: GcsClient, sample, lanes, gt: dict, n_points: int) -> None:
     """Muestra la etiqueta nativa junto al GT generado para poder revisar puntos.
 
-    sample.lanes contiene los puntos tal como se parsean del formato nativo (float);
-    gt['Lines'] los contiene redondeados a int. La cadena es: archivo nativo ->
-    parseado (orig) -> GT (redondeado). Los carriles se corresponden uno a uno.
+    `lanes` son los puntos tal como se parsean del formato nativo (float); gt['Lines']
+    los contiene redondeados a int. La cadena es: archivo nativo -> parseado (orig)
+    -> GT (redondeado). Los carriles se corresponden uno a uno.
     """
     if sample.label_uri:
         try:
@@ -114,7 +114,7 @@ def compare_to_native(gcs: GcsClient, sample, gt: dict, n_points: int) -> None:
             print(f"     native {sample.label_uri.rsplit('/', 1)[-1]}: {raw[:160].strip()}")
         except Exception as e:  # noqa: BLE001
             print(f"     (native label unavailable: {type(e).__name__})")
-    for li, (orig_lane, gt_lane) in enumerate(zip(sample.lanes, gt["Lines"])):
+    for li, (orig_lane, gt_lane) in enumerate(zip(lanes, gt["Lines"])):
         pairs = "  ".join(
             f"({ox:g},{oy:g})->({p['x']},{p['y']})"
             for (ox, oy), p in zip(orig_lane[:n_points], gt_lane[:n_points])
@@ -159,16 +159,19 @@ def main() -> None:
     for sample in adapter.iter_samples(want_splits):
         if written >= args.count:
             break
-        if not sample.has_label and not args.include_unlabeled:
+        lanes = adapter.read_label(sample.label_uri)
+        has_label = lanes is not None
+        if not has_label and not args.include_unlabeled:
             continue
 
-        gt = to_label_json(sample.lanes, epoch)
-        report(written, sample, gt)
+        gt = to_label_json(lanes or [], epoch)
+        report(written, sample, gt, has_label)
         base = f"{dataset}_{written:02d}_{sample.frame_id}"
 
         with open(os.path.join(args.out, base + ".lines.json"), "w", encoding="utf-8") as fh:
             fh.write(format_label_json(gt))
-        compare_to_native(gcs, sample, gt, args.points)
+        if has_label:
+            compare_to_native(gcs, sample, lanes, gt, args.points)
 
         if Image is not None:
             try:

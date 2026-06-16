@@ -17,10 +17,13 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import itertools
 import logging
+import os
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import Dict, List
 
@@ -104,23 +107,66 @@ def build_source_dataset_row(
     }
 
 
+def _imap_unordered(executor, fn, items, max_in_flight: int):
+    """Aplica `fn` a `items` en paralelo, como mucho `max_in_flight` a la vez.
+
+    Rinde los resultados conforme se completan (orden NO garantizado). El iterable
+    se consume en el hilo principal, asi que solo hay ~max_in_flight tareas vivas:
+    no se materializa todo el dataset en memoria.
+
+    Si avanzar `items` lanza (p. ej. una lectura de lista que falla), se dejan de
+    enviar tareas pero se **drenan y rinden** las ya enviadas antes de relanzar la
+    excepcion: el consumidor puede agregar lo ya completado antes de abortar.
+    """
+    it = iter(items)
+    futures: set = set()
+    gen_error = None
+
+    def _fill(n: int) -> None:
+        nonlocal gen_error
+        for _ in range(n):
+            if gen_error is not None:
+                return
+            try:
+                item = next(it)
+            except StopIteration:
+                return
+            except Exception as e:  # noqa: BLE001 - error generando muestras
+                gen_error = e
+                return
+            futures.add(executor.submit(fn, item))
+
+    _fill(max_in_flight)
+    while futures:
+        done, futures = wait(futures, return_when=FIRST_COMPLETED)
+        for fut in done:
+            yield fut.result()
+        _fill(len(done))
+    if gen_error is not None:
+        raise gen_error
+
+
 def run(
     dataset: str,
     *,
     dry_run: bool = False,
     limit: int | None = None,
+    workers: int | None = None,
     settings: Settings | None = None,
     gcs: GcsClient | None = None,
     bq: BigQueryWriter | None = None,
 ) -> Dict:
     """Ejecuta la ingesta+normalizacion de un dataset. Devuelve un resumen.
 
-    `gcs` y `bq` se pueden inyectar (tests); por defecto usan los clientes reales.
-    `limit` acota el numero de muestras procesadas (smoke test de solo lectura
-    junto con `dry_run=True`).
+    Procesa las imagenes en paralelo (casi todo el tiempo es esperar a GCS):
+    `workers` hilos (por defecto la env `WORKERS` o 16). `gcs`/`bq` se pueden
+    inyectar (tests). `limit` acota las muestras (smoke test con `dry_run=True`).
     """
     settings = settings or load_settings()
     gcs = gcs or GcsClient()
+    if workers is None:
+        workers = int(os.environ.get("WORKERS", "16"))
+    workers = max(1, workers)
 
     descriptor_uri = settings.descriptor_uri(dataset)
     log.info("Reading descriptor %s", descriptor_uri)
@@ -140,39 +186,39 @@ def run(
     ingested_at = _epoch_to_bq(epoch)
     out_prefix = settings.public_uri(dataset)
 
-    txt_groups: Dict[str, List[str]] = defaultdict(list)
-    image_rows: List[Dict] = []
-    written = skipped_no_label = reused = processed = unlabeled = 0
+    def process(sample) -> Dict:
+        """Worker (en paralelo): lee la etiqueta, copia la imagen y sube el .json.
 
-    for sample in adapter.iter_samples():
-        if limit is not None and processed >= limit:
-            break
-        processed += 1
-        if not sample.has_label and not ingest_unlabeled:
-            if skip_missing:
-                skipped_no_label += 1
-                log.debug("missing label, skipping: %s", sample.rel_path)
-                continue
-            raise RuntimeError(f"image without label: {sample.rel_path}")
-        if not sample.has_label:
-            unlabeled += 1
+        No muta estado compartido y NUNCA lanza: devuelve el resultado (o un error
+        por imagen) para que el hilo principal agregue de forma segura.
 
-        img_rel = image_out_path(sample)
-        img_uri = f"{out_prefix}/{img_rel}"
-        lbl_uri = f"{out_prefix}/{label_out_path(sample)}"
+        Contrato de hilos: los workers solo llaman `adapter.read_label(label_uri)` y
+        operaciones de GcsClient (que crean bucket/blob frescos por llamada sobre un
+        storage.Client thread-safe). NO leen estado del adapter resuelto en el hilo
+        principal (p. ej. CULane._label_strategy/_img_under_driver): eso ya viene
+        cocinado en Sample.label_uri / Sample.src_image_uri.
+        """
+        try:
+            lanes = adapter.read_label(sample.label_uri)
+            has_label = lanes is not None
+            if not has_label and not ingest_unlabeled:
+                if skip_missing:
+                    return {"status": "skipped"}
+                return {"status": "error", "rel": sample.rel_path, "error": "image without label"}
 
-        if not dry_run:
-            if not overwrite and gcs.exists(img_uri):
-                reused += 1
-            else:
-                gcs.copy(sample.src_image_uri, img_uri)
-                if sample.has_label:
-                    label_bytes = format_label_json(to_label_json(sample.lanes, epoch)).encode("utf-8")
-                    gcs.upload_bytes(lbl_uri, label_bytes, "application/json")
+            img_rel = image_out_path(sample)
+            img_uri = f"{out_prefix}/{img_rel}"
+            reused = False
+            if not dry_run:
+                if not overwrite and gcs.exists(img_uri):
+                    reused = True
+                else:
+                    gcs.copy(sample.src_image_uri, img_uri)
+                    if has_label:
+                        body = format_label_json(to_label_json(lanes, epoch)).encode("utf-8")
+                        gcs.upload_bytes(f"{out_prefix}/{label_out_path(sample)}", body, "application/json")
 
-        txt_groups[txt_out_path(sample)].append(img_rel)
-        image_rows.append(
-            build_image_row(
+            row = build_image_row(
                 image_id=sample.image_id,
                 dataset=sample.dataset,
                 gcs_uri=img_uri,
@@ -183,19 +229,70 @@ def run(
                 frame_id=sample.frame_id,
                 sequence_id=sample.sequence_id,
             )
-        )
-        written += 1
+            return {
+                "status": "ok",
+                "row": row,
+                "img_rel": img_rel,
+                "txt_rel": txt_out_path(sample),
+                "reused": reused,
+                "unlabeled": not has_label,
+            }
+        except Exception as e:  # noqa: BLE001 - los transitorios ya se reintentan en gcs
+            return {"status": "error", "rel": sample.rel_path, "error": f"{type(e).__name__}: {e}"}
+
+    sample_iter = adapter.iter_samples()
+    if limit is not None:
+        sample_iter = itertools.islice(sample_iter, limit)
+
+    txt_groups: Dict[str, List[str]] = defaultdict(list)
+    image_rows: List[Dict] = []
+    reused = unlabeled = skipped = failed = 0
+    aborted = False
+
+    # La agregacion ocurre solo en el hilo principal -> sin condiciones de carrera.
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        try:
+            for res in _imap_unordered(executor, process, sample_iter, workers * 4):
+                status = res["status"]
+                if status == "skipped":
+                    skipped += 1
+                elif status == "error":
+                    failed += 1
+                    if failed <= 20:
+                        log.warning("failed %s: %s", res.get("rel"), res.get("error"))
+                else:
+                    image_rows.append(res["row"])
+                    txt_groups[res["txt_rel"]].append(res["img_rel"])
+                    if res["reused"]:
+                        reused += 1
+                    if res["unlabeled"]:
+                        unlabeled += 1
+        except Exception as e:  # noqa: BLE001 - fallo al GENERAR muestras (lectura de listas)
+            # _imap_unordered ya drena y agrega lo completado antes de relanzar; aqui
+            # registramos ese progreso parcial (txt + BQ) y salimos !=0 -> re-ejecutar resume.
+            aborted = True
+            log.error("sample generation aborted; recording partial progress: %s", e)
 
     # --- ficheros <split>.txt (una ruta de imagen por linea) ---
+    # Sin overwrite se fusiona con el .txt previo: el listado solo crece, asi un
+    # re-run parcial (resume) no borra rutas escritas en una ejecucion anterior.
     for txt_rel, lines in txt_groups.items():
-        body = "\n".join(sorted(set(lines))) + "\n"
+        paths = set(lines)
+        txt_uri = f"{out_prefix}/{txt_rel}"
+        if not overwrite and not dry_run:
+            try:
+                paths.update(p for p in gcs.read_text(txt_uri).splitlines() if p)
+            except Exception:  # noqa: BLE001 - aun no existia
+                pass
         if not dry_run:
-            gcs.upload_bytes(f"{out_prefix}/{txt_rel}", body.encode("utf-8"), "text/plain")
+            body = "\n".join(sorted(paths)) + "\n"
+            gcs.upload_bytes(txt_uri, body.encode("utf-8"), "text/plain")
 
     num_images = len(image_rows)
+    written = num_images - reused
     log.info(
-        "Samples: %d normalized (%d reused, %d unlabeled, %d skipped without labels)",
-        num_images, reused, unlabeled, skipped_no_label,
+        "Samples: %d normalized (%d new, %d reused, %d unlabeled, %d skipped, %d failed); workers=%d",
+        num_images, written, reused, unlabeled, skipped, failed, workers,
     )
 
     # --- BigQuery: upsert tbl_images + fila en tbl_source_datasets ---
@@ -218,11 +315,15 @@ def run(
         "dataset": dataset,
         "adapter": adapter_name,
         "num_images": num_images,
+        "written": written,
         "reused": reused,
         "unlabeled": unlabeled,
-        "skipped_no_label": skipped_no_label,
+        "skipped_no_label": skipped,
+        "failed": failed,
+        "aborted": aborted,
         "splits": sorted({row["split"] for row in image_rows}),
         "dry_run": dry_run,
+        "workers": workers,
     }
 
 
@@ -231,16 +332,18 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--dataset", required=True, help="short dataset name (folder in raw-public)")
     parser.add_argument("--dry-run", action="store_true", help="do not write to GCS or BigQuery")
     parser.add_argument("--limit", type=int, default=None, help="process at most N samples (smoke test)")
+    parser.add_argument("--workers", type=int, default=None, help="parallel workers (default: WORKERS env or 16)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
-        summary = run(args.dataset, dry_run=args.dry_run, limit=args.limit)
+        summary = run(args.dataset, dry_run=args.dry_run, limit=args.limit, workers=args.workers)
     except Exception:  # noqa: BLE001 - el job debe salir !=0 ante cualquier fallo
         log.exception("Ingestion failed for %s", args.dataset)
         return 1
     log.info("OK %s", summary)
-    return 0
+    # imagenes fallidas o generacion abortada -> salida !=0 (re-ejecutar resume, idempotente)
+    return 1 if summary.get("failed") or summary.get("aborted") else 0
 
 
 if __name__ == "__main__":

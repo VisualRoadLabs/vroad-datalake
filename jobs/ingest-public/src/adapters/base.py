@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import posixpath
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Iterator, List, Protocol, Sequence, Tuple
 
 # Un carril es una lista de puntos (x, y) en float (se redondean al escribir).
@@ -43,18 +43,21 @@ class Store(Protocol):
 
 @dataclass
 class Sample:
-    """Una imagen normalizada lista para escribir."""
+    """Una imagen a normalizar.
+
+    La etiqueta NO se lee aqui: el adaptador solo calcula `label_uri`; quien
+    consume (job o preview) la resuelve con `BaseAdapter.read_label`. Asi la
+    lectura de etiquetas (una I/O por imagen) se paraleliza en el job.
+    """
 
     dataset: str
     split: str                      # train | val | test
     rel_path: str                   # ruta nativa de la imagen, relativa al dataset
     src_image_uri: str              # de donde copiar la imagen (path del store)
-    lanes: Lane = field(default_factory=list)  # carriles (vacio si no hay etiqueta)
-    has_label: bool = True
     category: str | None = None     # sub-split (p. ej. CULane test 'normal')
     width: int | None = None
     height: int | None = None
-    label_uri: str | None = None    # ruta de la etiqueta nativa (depurar/comparar)
+    label_uri: str | None = None    # ruta de la etiqueta nativa (la lee read_label)
 
     @property
     def image_id(self) -> str:
@@ -146,6 +149,28 @@ class BaseAdapter(ABC):
             return self.store.list(prefix)
         except Exception:
             return []
+
+    def read_label(self, label_uri: str | None) -> List[Lane] | None:
+        """Lee y parsea la etiqueta nativa; None si la imagen no tiene GT.
+
+        Se llama por imagen (no en `iter_samples`), para poder paralelizarlo. Un
+        objeto inexistente (404) cuenta como 'sin GT' (None), no como error: asi una
+        sola lectura (con su reintento) hace de comprobacion de existencia y se evita
+        la carrera exists()->read_text. Otros errores se propagan.
+        """
+        if not label_uri:
+            return None
+        try:
+            text = self.store.read_text(label_uri)
+        except Exception as e:  # noqa: BLE001 - 404 -> sin GT; el resto se propaga
+            if getattr(e, "code", None) == 404 or type(e).__name__ == "NotFound":
+                return None
+            raise
+        return self._parse(text)
+
+    def _parse(self, text: str) -> List[Lane]:
+        """Convierte el texto de la etiqueta nativa en carriles (lo da cada adapter)."""
+        raise NotImplementedError
 
     @abstractmethod
     def iter_samples(self, splits: set[str] | None = None) -> Iterator[Sample]:

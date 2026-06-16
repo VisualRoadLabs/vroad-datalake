@@ -43,23 +43,18 @@ class CurvelanesAdapter(BaseAdapter):
             if splits is not None and split not in splits:
                 continue
             for native_img in self._entries(native, ingest_unlabeled):
-                rel = self._strip_images(native_img)      # a/1.jpg
-                label_path = self._join(native, self._label_native(native_img))
-                lanes: List[Lane] = []
-                has_label = self.store.exists(label_path)
-                if has_label:
-                    lanes = parse_curvelanes_json(self.store.read_text(label_path))
                 yield Sample(
                     dataset=self.dataset,
                     split=split,
-                    rel_path=rel,
+                    rel_path=self._strip_images(native_img),      # a/1.jpg
                     src_image_uri=self._join(native, native_img),
-                    lanes=lanes,
-                    has_label=has_label,
                     width=self.width,
                     height=self.height,
-                    label_uri=label_path if has_label else None,
+                    label_uri=self._join(native, self._label_native(native_img)),
                 )
+
+    def _parse(self, text: str) -> List[Lane]:
+        return parse_curvelanes_json(text)
 
     def _entries(self, native: str, ingest_unlabeled: bool) -> List[str]:
         """Rutas nativas de imagen (`images/<...>`) de un split.
