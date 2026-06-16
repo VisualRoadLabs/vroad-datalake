@@ -1,0 +1,23 @@
+# Build artifacts, virtual environments, caches, and other files that should not be included in the Docker image.
+.git/
+.github/
+.venv/
+venv/
+env/
+ENV/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests, previews and documentation that are not needed in the Docker image.
+tests/
+**/tests/
+previews/
+docs/
+*.md
+
+# Temporary files and local configuration that should not be included in the Docker image.
+.env
+.envrc
