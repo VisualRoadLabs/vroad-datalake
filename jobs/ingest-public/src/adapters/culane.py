@@ -154,6 +154,9 @@ class CulaneAdapter(BaseAdapter):
         # "annotations_new" o cualquier carpeta forzada por label_dir
         return self._join(strategy, stem)
 
+    def _parse(self, text: str) -> List[Lane]:
+        return parse_lines_txt(text)
+
     def _samples_from(self, list_path: str, split: str, category: Optional[str]) -> Iterator[Sample]:
         for line in self.store.read_text(list_path).splitlines():
             entry = line.strip()
@@ -161,20 +164,13 @@ class CulaneAdapter(BaseAdapter):
                 continue
             # En *_gt.txt hay varias columnas; la imagen es la primera.
             rel = entry.split()[0].lstrip("/")
-            label_path = self._label_path(rel)
-            lanes: List[Lane] = []
-            has_label = self.store.exists(label_path)
-            if has_label:
-                lanes = parse_lines_txt(self.store.read_text(label_path))
             yield Sample(
                 dataset=self.dataset,
                 split=split,
                 rel_path=rel,
                 src_image_uri=self._image_uri(rel),
-                lanes=lanes,
-                has_label=has_label,
                 category=category,
                 width=self.width,
                 height=self.height,
-                label_uri=label_path if has_label else None,
+                label_uri=self._label_path(rel),
             )
