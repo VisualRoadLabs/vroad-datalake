@@ -13,6 +13,9 @@ API:
     GCS). Es ASINCRONA (hace polling). Devuelve una lista de dict|None alineada con
     `image_uris` (None si esa imagen fallo). El agente de servicio de Vertex debe
     poder leer las imagenes; si Vertex no admite lote inline, usar generate_json.
+  - media_resolution (def. "LOW"): calidad de la imagen enviada a Gemini; LOW =
+    menos tokens por imagen = mas barato. Se puede subir por instancia (p. ej.
+    privacy podria querer HIGH para caras/matriculas pequenas).
 """
 from __future__ import annotations
 
@@ -41,20 +44,36 @@ def _state_name(job) -> str:
 class GeminiVertex:
     """Cliente fino de Gemini en Vertex (sin claves: usa la SA). Sin logica de job."""
 
-    def __init__(self, project: str, location: str, model: str, client=None, max_retries: int = 3):
+    def __init__(self, project: str, location: str, model: str, client=None, max_retries: int = 3,
+                 media_resolution: str = "LOW"):
         self.project = project
         self.location = location
         self.model = model
         self.max_retries = max(1, max_retries)
+        self._media_resolution = self._resolve_media(media_resolution)
         if client is None:
             if genai is None:
                 raise RuntimeError("google-genai no esta instalado; instala las dependencias.")
             client = genai.Client(vertexai=True, project=project, location=location)
         self._client = client
 
+    @staticmethod
+    def _resolve_media(name: str):
+        if types is None:  # pragma: no cover - solo si falta el paquete
+            return None
+        levels = {
+            "LOW": types.MediaResolution.MEDIA_RESOLUTION_LOW,
+            "MEDIUM": types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+            "HIGH": types.MediaResolution.MEDIA_RESOLUTION_HIGH,
+        }
+        return levels.get((name or "LOW").upper(), types.MediaResolution.MEDIA_RESOLUTION_LOW)
+
     def _config(self, schema: Optional[Dict]):
         return types.GenerateContentConfig(
-            temperature=0.0, response_mime_type="application/json", response_schema=schema
+            temperature=0.0,
+            response_mime_type="application/json",
+            response_schema=schema,
+            media_resolution=self._media_resolution,
         )
 
     def generate_json(self, image_bytes: bytes, prompt: str, schema: Optional[Dict] = None,
