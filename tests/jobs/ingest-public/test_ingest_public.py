@@ -1,8 +1,8 @@
-"""Read-only smoke test of the ingest-public job against real GCP.
+"""Smoke test de solo lectura del job ingest-public contra GCP real.
 
-Runs the job in dry-run (writes nothing) over a few samples and prints the
-summary (run with `pytest -s`). Picks the first valid descriptor under
-_descriptors/ (one that defines `adapter`); skips if there is none.
+Ejecuta el job en dry-run (no escribe nada) sobre unas pocas muestras e imprime
+el resumen (ejecutar con `pytest -s`). Elige el primer descriptor valido bajo
+_descriptors/ (uno que define `adapter`); si no hay ninguno, salta el test.
 """
 from __future__ import annotations
 
