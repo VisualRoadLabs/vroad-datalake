@@ -274,18 +274,23 @@ def run(
             log.error("sample generation aborted; recording partial progress: %s", e)
 
     # --- ficheros <split>.txt (una ruta de imagen por linea) ---
-    # Sin overwrite se fusiona con el .txt previo: el listado solo crece, asi un
-    # re-run parcial (resume) no borra rutas escritas en una ejecucion anterior.
+    # Sin overwrite se fusiona con el .txt previo (el listado solo crece). Solo se
+    # (sobre)escribe si el contenido cambia: asi un re-run sin novedades no reescribe
+    # nada (y no necesita permiso de borrado, ya que sobrescribir en GCS = borrar+crear).
     for txt_rel, lines in txt_groups.items():
-        paths = set(lines)
+        if dry_run:
+            continue
         txt_uri = f"{out_prefix}/{txt_rel}"
-        if not overwrite and not dry_run:
+        paths = set(lines)
+        existing = None
+        if not overwrite:
             try:
-                paths.update(p for p in gcs.read_text(txt_uri).splitlines() if p)
+                existing = gcs.read_text(txt_uri)
+                paths.update(p for p in existing.splitlines() if p)
             except Exception:  # noqa: BLE001 - aun no existia
-                pass
-        if not dry_run:
-            body = "\n".join(sorted(paths)) + "\n"
+                existing = None
+        body = "\n".join(sorted(paths)) + "\n"
+        if body != existing:
             gcs.upload_bytes(txt_uri, body.encode("utf-8"), "text/plain")
 
     num_images = len(image_rows)
