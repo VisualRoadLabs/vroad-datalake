@@ -68,6 +68,16 @@ class BigQueryWriter:
             sent += len(chunk)
         return sent
 
+    def query(self, sql: str, params: Sequence[tuple] = ()) -> List[Dict]:
+        """Ejecuta un SELECT (con parametros escalares opcionales) y devuelve dicts.
+
+        `params` es una lista de (nombre, tipo, valor), p. ej. `('source','STRING','public')`.
+        Es un query job (`bigquery.jobs.create`) + lectura de las tablas referenciadas.
+        """
+        qp = [bigquery.ScalarQueryParameter(n, t, v) for n, t, v in params]
+        job_config = bigquery.QueryJobConfig(query_parameters=qp)
+        return [dict(row) for row in self._client.query(sql, job_config=job_config).result()]
+
     @staticmethod
     def _merge_sql(table_fqn: str, schema, key_fields: Sequence[str]) -> str:
         columns = [f.name for f in schema]
