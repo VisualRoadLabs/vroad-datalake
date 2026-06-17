@@ -1,9 +1,11 @@
 # wf-prod-classify-usc1
-# Ejecuta job-prod-classify-usc1 acotando QUE clasificar mediante env overrides.
+# Ejecuta job-prod-classify-usc1 acotando QUE clasificar via args del contenedor.
 # Entrada (args):
-#   { "source": "user" | "public", "dataset": "<opcional>", "date": "<opcional>" }
-# - Scheduler de usuario (00:00):  {"source":"user"}        -> el job usa ayer
+#   { "source": "user" | "public", "dataset": "<opcional>" }
+# - Scheduler de usuario (00:00):  {"source":"user"}        -> clasifica lo pendiente
 # - Desde wf-prod-public-ingest:   {"source":"public","dataset":"culane"}
+# El job procesa solo lo aun NO clasificado (anti-join en BigQuery), asi que no
+# necesita fecha: re-ejecutarlo es idempotente.
 
 main:
   params: [args]
@@ -14,7 +16,6 @@ main:
           - region: ${sys.get_env("GOOGLE_CLOUD_LOCATION")}
           - source: ${default(map.get(args, "source"), "user")}
           - dataset: ${default(map.get(args, "dataset"), "")}
-          - run_date: ${default(map.get(args, "date"), "")}
 
     - run_classify:
         # El conector ejecuta el job y espera a que termine (error si falla).
@@ -24,13 +25,10 @@ main:
           body:
             overrides:
               containerOverrides:
-                - env:
-                    - name: SOURCE
-                      value: ${source}
-                    - name: DATASET
-                      value: ${dataset}
-                    - name: RUN_DATE
-                      value: ${run_date}
+                # El job lee --source/--dataset (argparse). Pasarlos como args, no
+                # como env, deja intacto el resto del entorno del job. dataset=""
+                # => el job no filtra por dataset (clasifica todo lo pendiente del source).
+                - args: ['--source', '${source}', '--dataset', '${dataset}']
         result: execution
 
     - done:
