@@ -69,7 +69,6 @@ def run(
     dry_run: bool = False,
     limit: int | None = None,
     workers: int | None = None,
-    batch: bool | None = None,
     settings: Settings | None = None,
     gcs: GcsClient | None = None,
     bq: BigQueryWriter | None = None,
@@ -77,10 +76,11 @@ def run(
 ) -> Dict:
     """Clasifica las imagenes pendientes de `source` (y `dataset`). Devuelve un resumen.
 
-    `batch` (por defecto GEMINI_BATCH): True -> lote por gs:// URI (mas barato,
-    asincrono, sin descargar); False -> llamada sincrona por imagen en paralelo.
-    `gcs`/`bq`/`classifier` se pueden inyectar (tests). `dry_run` clasifica pero no
-    escribe en BigQuery.
+    Modo unico: sincrono en paralelo (descarga la imagen de GCS y la clasifica con
+    Gemini online). Vertex no admite batch inline y sus alternativas (src en
+    GCS/BigQuery) romperian el least-privilege de la SA (read-only en GCS, sin
+    tables.create), asi que no hay modo lote. `gcs`/`bq`/`classifier` se pueden
+    inyectar (tests). `dry_run` clasifica pero no escribe en BigQuery.
     """
     settings = settings or load_settings()
     gcs = gcs or GcsClient()
@@ -89,8 +89,6 @@ def run(
     if workers is None:
         workers = int(os.environ.get("WORKERS", "16"))
     workers = max(1, workers)
-    if batch is None:
-        batch = settings.gemini_batch
 
     params = [("source", "STRING", source)]
     if dataset:
@@ -99,8 +97,7 @@ def run(
     if limit is not None:
         sql += f"\nLIMIT {int(limit)}"  # acota en BigQuery; no trae todo para recortar luego
     targets = bq.query(sql, params)
-    log.info("To classify: %d image(s) (source=%s dataset=%s, batch=%s)",
-             len(targets), source, dataset or "*", batch)
+    log.info("To classify: %d image(s) (source=%s dataset=%s)", len(targets), source, dataset or "*")
 
     epoch = int(time.time())
     classified_at = datetime.fromtimestamp(epoch, tz=timezone.utc)
@@ -108,31 +105,23 @@ def run(
 
     rows: List[Dict] = []
     failed = 0
-    if batch:
-        # Lote: clasifica por gs:// URI (sin descargar). Una sola tarea asincrona.
-        results = classifier.classify_uris([t["gcs_uri"] for t in targets])
-        for target, labels in zip(targets, results):
-            if labels is None:
-                failed += 1
-            else:
-                rows.append(_row(target, labels, model, classified_at))
-    else:
-        # Sincrono en paralelo: descarga la imagen y la clasifica.
-        def process(target: Dict) -> Dict:
-            try:
-                labels = classifier.classify(gcs.read_bytes(target["gcs_uri"]))
-                return {"status": "ok", "row": _row(target, labels, model, classified_at)}
-            except Exception as e:  # noqa: BLE001 - transitorios ya reintentados en vertex/gcs
-                return {"status": "error", "image_id": target["image_id"], "error": f"{type(e).__name__}: {e}"}
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            for res in imap_unordered(executor, process, iter(targets), workers * 4):
-                if res["status"] == "ok":
-                    rows.append(res["row"])
-                else:
-                    failed += 1
-                    if failed <= 20:
-                        log.warning("failed %s: %s", res.get("image_id"), res.get("error"))
+    # Sincrono en paralelo: descarga la imagen de GCS y la clasifica con Gemini online.
+    def process(target: Dict) -> Dict:
+        try:
+            labels = classifier.classify(gcs.read_bytes(target["gcs_uri"]))
+            return {"status": "ok", "row": _row(target, labels, model, classified_at)}
+        except Exception as e:  # noqa: BLE001 - transitorios ya reintentados en vertex/gcs
+            return {"status": "error", "image_id": target["image_id"], "error": f"{type(e).__name__}: {e}"}
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for res in imap_unordered(executor, process, iter(targets), workers * 4):
+            if res["status"] == "ok":
+                rows.append(res["row"])
+            else:
+                failed += 1
+                if failed <= 20:
+                    log.warning("failed %s: %s", res.get("image_id"), res.get("error"))
 
     if not dry_run and rows:
         bq.upsert(settings.tbl_classifications, rows, ["image_id"])
@@ -145,7 +134,6 @@ def run(
         "classified": len(rows),
         "failed": failed,
         "dry_run": dry_run,
-        "batch": batch,
         "workers": workers,
         "model": model,
     }
@@ -159,16 +147,14 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--dataset", default=None, help="restrict to this dataset (typical with --source public)")
     parser.add_argument("--dry-run", action="store_true", help="classify but do not write to BigQuery")
     parser.add_argument("--limit", type=int, default=None, help="classify at most N images (smoke test)")
-    parser.add_argument("--workers", type=int, default=None, help="parallel workers for sync mode (default: WORKERS env or 16)")
-    parser.add_argument("--batch", action=argparse.BooleanOptionalAction, default=None,
-                        help="batch mode on/off (--batch/--no-batch); default: GEMINI_BATCH env")
+    parser.add_argument("--workers", type=int, default=None, help="parallel workers (default: WORKERS env or 16)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         summary = run(
             source=args.source, dataset=args.dataset,
-            dry_run=args.dry_run, limit=args.limit, workers=args.workers, batch=args.batch,
+            dry_run=args.dry_run, limit=args.limit, workers=args.workers,
         )
     except Exception:  # noqa: BLE001 - el job debe salir !=0 ante cualquier fallo
         log.exception("Classification failed (source=%s dataset=%s)", args.source, args.dataset)
