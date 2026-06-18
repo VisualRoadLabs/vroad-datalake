@@ -87,7 +87,9 @@ def run(
     bq = bq or BigQueryWriter(location=settings.bq_location)
     classifier = classifier or SceneClassifier.from_settings(settings)
     if workers is None:
-        workers = int(os.environ.get("WORKERS", "16"))
+        # Concurrencia baja a proposito: gemini-2.5-flash-lite usa cuota compartida
+        # dinamica y se satura (429) con mucha concurrencia. Subir solo si hay margen.
+        workers = int(os.environ.get("WORKERS", "4"))
     workers = max(1, workers)
 
     params = [("source", "STRING", source)]
@@ -147,7 +149,7 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--dataset", default=None, help="restrict to this dataset (typical with --source public)")
     parser.add_argument("--dry-run", action="store_true", help="classify but do not write to BigQuery")
     parser.add_argument("--limit", type=int, default=None, help="classify at most N images (smoke test)")
-    parser.add_argument("--workers", type=int, default=None, help="parallel workers (default: WORKERS env or 16)")
+    parser.add_argument("--workers", type=int, default=None, help="parallel Gemini calls (default: WORKERS env or 4)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
