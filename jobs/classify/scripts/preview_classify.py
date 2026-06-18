@@ -42,9 +42,9 @@ try:
 except Exception:
     pass
 
-from libs.config import load_settings
-from libs.gcs import GcsClient
-from src.classifier import SceneClassifier
+from libs.config import load_settings  # noqa: E402 - tras ajustar sys.path
+from libs.gcs import GcsClient  # noqa: E402
+from src.classifier import SceneClassifier  # noqa: E402
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 

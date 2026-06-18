@@ -1,7 +1,6 @@
 """Paralelismo acotado, compartido por los jobs (su trabajo es I/O/red-bound)."""
 from __future__ import annotations
 
-import itertools
 from concurrent.futures import FIRST_COMPLETED, wait
 
 
