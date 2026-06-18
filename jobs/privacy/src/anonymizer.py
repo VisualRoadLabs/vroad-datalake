@@ -91,8 +91,10 @@ def blur_regions(img, regions: Sequence[Tuple[float, float, float, float]],
     h, w = out.shape[:2]
     k = blur_radius if blur_radius % 2 == 1 else blur_radius + 1
     for (x1, y1, x2, y2) in regions:
-        x1i = max(0, int(round(x1))); y1i = max(0, int(round(y1)))
-        x2i = min(w, int(round(x2))); y2i = min(h, int(round(y2)))
+        x1i = max(0, int(round(x1)))
+        y1i = max(0, int(round(y1)))
+        x2i = min(w, int(round(x2)))
+        y2i = min(h, int(round(y2)))
         if x2i <= x1i or y2i <= y1i:
             continue
         roi = out[y1i:y2i, x1i:x2i]
