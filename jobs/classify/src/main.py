@@ -106,10 +106,23 @@ def run(
     classified_at = datetime.fromtimestamp(epoch, tz=timezone.utc)
     model = settings.gemini_model
 
-    rows: List[Dict] = []
+    pending: List[Dict] = []   # filas clasificadas aun NO escritas en BigQuery
+    classified = 0             # total clasificadas (ya escritas + pendientes)
     failed = 0
     processed = 0
     total = len(targets)
+    # Checkpoint: cada N filas se vuelcan a BigQuery (MERGE idempotente) para no perder
+    # el progreso si el job casca o Cloud Run lo corta (SIGTERM/timeout) a mitad.
+    checkpoint = max(1, int(os.environ.get("CLASSIFY_CHECKPOINT", "500")))
+
+    def flush() -> None:
+        """Vuelca lo pendiente a BigQuery y limpia el buffer (no escribe en dry-run)."""
+        if dry_run or not pending:
+            return
+        bq.upsert(settings.tbl_classifications, pending, ["image_id"])
+        log.info("Checkpoint: saved +%d rows to %s (%d/%d processed)",
+                 len(pending), settings.tbl_classifications, processed, total)
+        pending.clear()
 
     # Sincrono en paralelo: descarga la imagen de GCS y la clasifica con Gemini online.
     def process(target: Dict) -> Dict:
@@ -123,7 +136,8 @@ def run(
         for res in imap_unordered(executor, process, iter(targets), workers * 4):
             processed += 1
             if res["status"] == "ok":
-                rows.append(res["row"])
+                pending.append(res["row"])
+                classified += 1
             else:
                 failed += 1
                 if failed <= 20:
@@ -138,17 +152,17 @@ def run(
                 else:
                     print(f"[classify] first image FAILED: {res.get('image_id')}: {res.get('error')}", flush=True)
             if processed % 100 == 0:  # resumen periodico para seguir el avance
-                log.info("Progress: %d/%d done (%d ok, %d failed)", processed, total, len(rows), failed)
+                log.info("Progress: %d/%d done (%d ok, %d failed)", processed, total, classified, failed)
+            if len(pending) >= checkpoint:  # checkpoint incremental
+                flush()
 
-    if not dry_run and rows:
-        bq.upsert(settings.tbl_classifications, rows, ["image_id"])
-        log.info("BigQuery updated: %s (+%d rows)", settings.tbl_classifications, len(rows))
+    flush()  # vuelca lo que quede al terminar
 
     return {
         "source": source,
         "dataset": dataset,
         "candidates": len(targets),
-        "classified": len(rows),
+        "classified": classified,
         "failed": failed,
         "dry_run": dry_run,
         "workers": workers,
