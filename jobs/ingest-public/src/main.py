@@ -121,13 +121,13 @@ def run(
     """Ejecuta la ingesta+normalizacion de un dataset. Devuelve un resumen.
 
     Procesa las imagenes en paralelo (casi todo el tiempo es esperar a GCS):
-    `workers` hilos (por defecto la env `WORKERS` o 16). `gcs`/`bq` se pueden
+    `workers` hilos (por defecto la env `INGEST_WORKERS` o 16). `gcs`/`bq` se pueden
     inyectar (tests). `limit` acota las muestras (smoke test con `dry_run=True`).
     """
     settings = settings or load_settings()
     gcs = gcs or GcsClient()
     if workers is None:
-        workers = int(os.environ.get("WORKERS", "16"))
+        workers = int(os.environ.get("INGEST_WORKERS", "16"))
     workers = max(1, workers)
 
     descriptor_uri = settings.descriptor_uri(dataset)
@@ -209,12 +209,14 @@ def run(
     txt_groups: Dict[str, List[str]] = defaultdict(list)
     image_rows: List[Dict] = []
     reused = unlabeled = skipped = failed = 0
+    processed = 0
     aborted = False
 
     # La agregacion ocurre solo en el hilo principal -> sin condiciones de carrera.
     with ThreadPoolExecutor(max_workers=workers) as executor:
         try:
             for res in _imap_unordered(executor, process, sample_iter, workers * 4):
+                processed += 1
                 status = res["status"]
                 if status == "skipped":
                     skipped += 1
@@ -229,6 +231,18 @@ def run(
                         reused += 1
                     if res["unlabeled"]:
                         unlabeled += 1
+                if processed == 1:
+                    # Comprobacion temprana: la primera muestra se proceso bien.
+                    if status == "ok":
+                        kind = "unlabeled" if res["unlabeled"] else ("reused" if res["reused"] else "new")
+                        print(f"[ingest] first sample OK: {res['row']['image_id']} -> {res['img_rel']} ({kind})", flush=True)
+                    elif status == "skipped":
+                        print("[ingest] first sample: skipped (image without label)", flush=True)
+                    else:
+                        print(f"[ingest] first sample FAILED: {res.get('rel')}: {res.get('error')}", flush=True)
+                if processed % 100 == 0:  # resumen periodico del avance
+                    log.info("Progress: %d done (%d normalized, %d reused, %d unlabeled, %d skipped, %d failed)",
+                             processed, len(image_rows), reused, unlabeled, skipped, failed)
         except Exception as e:  # noqa: BLE001 - fallo al GENERAR muestras (lectura de listas)
             # _imap_unordered ya drena y agrega lo completado antes de relanzar; aqui
             # registramos ese progreso parcial (txt + BQ) y salimos !=0 -> re-ejecutar resume.
@@ -299,7 +313,7 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--dataset", required=True, help="short dataset name (folder in raw-public)")
     parser.add_argument("--dry-run", action="store_true", help="do not write to GCS or BigQuery")
     parser.add_argument("--limit", type=int, default=None, help="process at most N samples (smoke test)")
-    parser.add_argument("--workers", type=int, default=None, help="parallel workers (default: WORKERS env or 16)")
+    parser.add_argument("--workers", type=int, default=None, help="parallel workers (default: INGEST_WORKERS env or 16)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

@@ -88,8 +88,9 @@ def run(
     classifier = classifier or SceneClassifier.from_settings(settings)
     if workers is None:
         # Concurrencia baja a proposito: gemini-2.5-flash-lite usa cuota compartida
-        # dinamica y se satura (429) con mucha concurrencia. Subir solo si hay margen.
-        workers = int(os.environ.get("WORKERS", "4"))
+        # dinamica y se satura (429) con mucha concurrencia. Env PROPIA del job (no
+        # compartida) para no acoplar la concurrencia de otros jobs. Subir solo con margen.
+        workers = int(os.environ.get("CLASSIFY_WORKERS", "4"))
     workers = max(1, workers)
 
     params = [("source", "STRING", source)]
@@ -107,6 +108,8 @@ def run(
 
     rows: List[Dict] = []
     failed = 0
+    processed = 0
+    total = len(targets)
 
     # Sincrono en paralelo: descarga la imagen de GCS y la clasifica con Gemini online.
     def process(target: Dict) -> Dict:
@@ -118,12 +121,24 @@ def run(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for res in imap_unordered(executor, process, iter(targets), workers * 4):
+            processed += 1
             if res["status"] == "ok":
                 rows.append(res["row"])
             else:
                 failed += 1
                 if failed <= 20:
                     log.warning("failed %s: %s", res.get("image_id"), res.get("error"))
+            if processed == 1:
+                # Comprobacion temprana: la primera imagen se cargo de GCS y se clasifico.
+                if res["status"] == "ok":
+                    r = res["row"]
+                    print(f"[classify] first image OK: {r['image_id']} -> "
+                          f"weather={r['weather']} scene={r['scene']} "
+                          f"timeofday={r['timeofday']} road_geometry={r['road_geometry']}", flush=True)
+                else:
+                    print(f"[classify] first image FAILED: {res.get('image_id')}: {res.get('error')}", flush=True)
+            if processed % 100 == 0:  # resumen periodico para seguir el avance
+                log.info("Progress: %d/%d done (%d ok, %d failed)", processed, total, len(rows), failed)
 
     if not dry_run and rows:
         bq.upsert(settings.tbl_classifications, rows, ["image_id"])
@@ -149,10 +164,14 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--dataset", default=None, help="restrict to this dataset (typical with --source public)")
     parser.add_argument("--dry-run", action="store_true", help="classify but do not write to BigQuery")
     parser.add_argument("--limit", type=int, default=None, help="classify at most N images (smoke test)")
-    parser.add_argument("--workers", type=int, default=None, help="parallel Gemini calls (default: WORKERS env or 4)")
+    parser.add_argument("--workers", type=int, default=None, help="parallel Gemini calls (default: CLASSIFY_WORKERS env or 4)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Silencia el ruido del SDK: "AFC is enabled..." (google_genai) y un INFO de httpx
+    # por cada peticion. Deja solo los logs del job (progreso, fallos, resumen).
+    logging.getLogger("google_genai.models").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         summary = run(
             source=args.source, dataset=args.dataset,
