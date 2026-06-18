@@ -219,3 +219,7 @@ __marimo__/
 
 # Local preview artifacts
 previews/
+
+# Privacy model weights: se bajan de gs://bkt-prod-models-usc1 al contexto de build
+# (CI: paso fetch-model; local: gcloud storage cp ... models/) y se hornean en la imagen.
+models/
