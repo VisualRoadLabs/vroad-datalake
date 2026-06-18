@@ -78,6 +78,9 @@ class GeminiVertex:
             response_mime_type="application/json",
             response_schema=schema,
             media_resolution=self._media_resolution,
+            # No usamos function calling (salida JSON via response_schema). Apagar AFC
+            # evita que el SDK lo active y lo anuncie ("AFC is enabled...") en cada llamada.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
     def generate_json(self, image_bytes: bytes, prompt: str, schema: Optional[Dict] = None,
