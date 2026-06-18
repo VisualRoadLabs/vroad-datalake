@@ -6,19 +6,21 @@ Vertex con `vertexai=True` -> usa la SA del job automaticamente, SIN claves (ADC
 
 API:
   - generate_json(image_bytes, prompt, schema): llamada SINCRONA; devuelve el JSON
-    ya parseado (dict). Reintenta transitorios.
+    ya parseado (dict). Los transitorios (429 rate-limit / 503 / 5xx / timeouts) los
+    reintenta el SDK con backoff exponencial + jitter (HttpRetryOptions, ver
+    __init__); los errores permanentes (400/403/404) NO se reintentan.
   - media_resolution (def. "LOW"): calidad de la imagen enviada a Gemini; LOW =
     menos tokens por imagen = mas barato. Se puede subir por instancia (p. ej.
     privacy podria querer HIGH para caras/matriculas pequenas).
 
 No hay modo lote: el batch de Vertex no admite peticiones inline (exige src en
 GCS/BigQuery), lo que romperia el least-privilege de las SA (read-only en GCS, sin
-tables.create). Para clasificar muchas imagenes se llama a generate_json en paralelo.
+tables.create). Para clasificar muchas imagenes se llama a generate_json en paralelo
+con concurrencia ACOTADA en el job; el backoff del SDK absorbe los 429 residuales.
 """
 from __future__ import annotations
 
 import json
-import time
 from typing import Dict, Optional
 
 try:  # el SDK solo hace falta en runtime
@@ -32,17 +34,31 @@ except Exception:  # pragma: no cover - solo si falta el paquete
 class GeminiVertex:
     """Cliente fino de Gemini en Vertex (sin claves: usa la SA). Sin logica de job."""
 
-    def __init__(self, project: str, location: str, model: str, client=None, max_retries: int = 3,
+    def __init__(self, project: str, location: str, model: str, client=None, max_retries: int = 6,
                  media_resolution: str = "LOW"):
         self.project = project
         self.location = location
         self.model = model
-        self.max_retries = max(1, max_retries)
+        self.max_retries = max(1, max_retries)  # intentos TOTALES (incl. el original)
         self._media_resolution = self._resolve_media(media_resolution)
         if client is None:
             if genai is None:
                 raise RuntimeError("google-genai no esta instalado; instala las dependencias.")
-            client = genai.Client(vertexai=True, project=project, location=location)
+            # Reintento delegado al SDK: backoff exponencial + jitter, cap 60s, SOLO en
+            # transitorios (429 rate-limit / 5xx / timeouts). Los 4xx permanentes no se
+            # reintentan. flash-lite usa cuota compartida dinamica -> hay que absorber 429.
+            http_options = types.HttpOptions(
+                retry_options=types.HttpRetryOptions(
+                    attempts=self.max_retries,
+                    initial_delay=1.0,
+                    max_delay=60.0,
+                    exp_base=2.0,
+                    jitter=1.0,
+                    http_status_codes=[408, 429, 500, 502, 503, 504],
+                )
+            )
+            client = genai.Client(vertexai=True, project=project, location=location,
+                                  http_options=http_options)
         self._client = client
 
     @staticmethod
@@ -66,17 +82,14 @@ class GeminiVertex:
 
     def generate_json(self, image_bytes: bytes, prompt: str, schema: Optional[Dict] = None,
                       mime_type: str = "image/jpeg") -> Dict:
-        """Una imagen -> JSON parseado (dict). Reintenta transitorios (429/503/timeout/JSON)."""
+        """Una imagen -> JSON parseado (dict).
+
+        El reintento de transitorios (429/5xx/timeouts) lo hace el SDK con backoff
+        exponencial + jitter (HttpRetryOptions de __init__). Aqui solo se hace la
+        llamada y se parsea la respuesta (response_schema garantiza JSON valido).
+        """
         contents = [types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt]
-        last_exc: Optional[Exception] = None
-        for attempt in range(self.max_retries):
-            try:
-                resp = self._client.models.generate_content(
-                    model=self.model, contents=contents, config=self._config(schema)
-                )
-                return json.loads(resp.text)
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
-                if attempt + 1 < self.max_retries:
-                    time.sleep(2 ** attempt)
-        raise last_exc  # type: ignore[misc]
+        resp = self._client.models.generate_content(
+            model=self.model, contents=contents, config=self._config(schema)
+        )
+        return json.loads(resp.text)
