@@ -27,6 +27,23 @@ steps:
         ruff check jobs/${_SERVICE} libs
         PYTHONPATH="jobs/${_SERVICE}:." python -m pytest -q tests/jobs/${_SERVICE} tests/libs
 
+  # 1b. Modelo de privacy: bajar el .pt al contexto de build (solo _SERVICE=privacy).
+  #     La SA de build (sa-cicd-deployer) tiene lectura sobre gs://bkt-prod-models-usc1.
+  #     Se hornea en la imagen (no se descarga en runtime). No-op para los demas servicios.
+  - id: fetch-model
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        if [ "${_SERVICE}" = "privacy" ]; then
+          set -e
+          mkdir -p models
+          gcloud storage cp gs://bkt-prod-models-usc1/privacy/dashcam-anon-yolov8-v1.pt models/dashcam-anon-yolov8-v1.pt
+        else
+          echo "Servicio ${_SERVICE}: sin modelo que bajar."
+        fi
+
   # 2. Build de la imagen. Contexto = raiz del repo para poder copiar libs/.
   - id: build
     name: gcr.io/cloud-builders/docker
