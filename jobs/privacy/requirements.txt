@@ -1,7 +1,7 @@
 # Runtime
 # torch/torchvision CPU-only (sin CUDA, ~2GB menos). El +cpu vive en el indice de PyTorch.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.2+cpu
+torch==2.12.0+cpu
 torchvision==0.17.2+cpu
 ultralytics>=8.2,<9          # YOLOv8; arrastra opencv-python, pillow, numpy, etc.
 dill>=0.3.8                 # requerido por el checkpoint dashcam_anonymizer
