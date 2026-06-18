@@ -7,7 +7,7 @@ cliente generico de Gemini, sin nada de esto. `SceneClassifier` une ambos.
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -65,8 +65,3 @@ class SceneClassifier:
         """Una imagen (bytes) -> {weather, scene, timeofday, road_geometry} validados."""
         raw = self._gemini.generate_json(image_bytes, self._prompt, response_schema(self._fields), mime_type)
         return validate(raw, self._fields)
-
-    def classify_uris(self, image_uris: Sequence[str], mime_type: str = "image/jpeg") -> List[Optional[Dict]]:
-        """Lote por gs:// URI -> lista alineada con `image_uris` (None si esa fallo)."""
-        results = self._gemini.batch_generate_json(image_uris, self._prompt, response_schema(self._fields), mime_type)
-        return [validate(r, self._fields) if r is not None else None for r in results]

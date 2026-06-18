@@ -27,7 +27,6 @@ class Settings:
     # Vertex / Gemini (privacy, classify)
     vertex_location: str
     gemini_model: str
-    gemini_batch: bool
     anon_method: str
 
     # Buckets (GCS)
@@ -92,13 +91,6 @@ def _env(name: str) -> str:
     return value
 
 
-def _env_bool(name: str) -> bool:
-    raw = os.environ.get(name)
-    if raw in (None, ""):
-        raise RuntimeError(f"Falta la variable de entorno requerida: {name}")
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
 def load_settings(env_file: str | None = None) -> Settings:
     """Lee el .env (si existe) y el entorno, y devuelve un Settings tipado."""
     if env_file:
@@ -110,7 +102,6 @@ def load_settings(env_file: str | None = None) -> Settings:
         region=_env("GCP_REGION"),
         vertex_location=_env("VERTEX_LOCATION"),
         gemini_model=_env("GEMINI_MODEL"),
-        gemini_batch=_env_bool("GEMINI_BATCH"),
         anon_method=_env("ANON_METHOD"),
         bkt_raw_public=_env("BKT_RAW_PUBLIC"),
         bkt_public=_env("BKT_PUBLIC"),

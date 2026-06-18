@@ -42,8 +42,8 @@ def test_run_dry_run_no_writes(cloud):
         bq = BigQueryWriter(location=settings.bq_location)
     except Exception as e:  # noqa: BLE001 - paquete bigquery ausente -> no es fallo del job
         pytest.skip(f"BigQuery no disponible ({type(e).__name__}: {str(e)[:120]})")
-    summary = run(source="public", dry_run=True, limit=2, batch=False, settings=settings, bq=bq)
+    summary = run(source="public", dry_run=True, limit=2, settings=settings, bq=bq)
     print(f"\n[classify] dry-run summary: {summary}")
-    assert summary["dry_run"] is True and summary["batch"] is False
+    assert summary["dry_run"] is True
     assert summary["candidates"] <= 2
     assert summary["classified"] <= summary["candidates"]
