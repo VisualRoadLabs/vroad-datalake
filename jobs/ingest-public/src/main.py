@@ -23,7 +23,7 @@ import os
 import sys
 import time
 from collections import defaultdict
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Dict, List
 
@@ -32,6 +32,7 @@ import yaml
 from libs.bigquery import BigQueryWriter
 from libs.config import Settings, load_settings
 from libs.gcs import GcsClient
+from libs.parallel import imap_unordered as _imap_unordered
 
 from .adapters.base import (
     format_label_json,
@@ -105,45 +106,6 @@ def build_source_dataset_row(
         "normalized_at": normalized_at,
         "notes": notes,
     }
-
-
-def _imap_unordered(executor, fn, items, max_in_flight: int):
-    """Aplica `fn` a `items` en paralelo, como mucho `max_in_flight` a la vez.
-
-    Rinde los resultados conforme se completan (orden NO garantizado). El iterable
-    se consume en el hilo principal, asi que solo hay ~max_in_flight tareas vivas:
-    no se materializa todo el dataset en memoria.
-
-    Si avanzar `items` lanza (p. ej. una lectura de lista que falla), se dejan de
-    enviar tareas pero se **drenan y rinden** las ya enviadas antes de relanzar la
-    excepcion: el consumidor puede agregar lo ya completado antes de abortar.
-    """
-    it = iter(items)
-    futures: set = set()
-    gen_error = None
-
-    def _fill(n: int) -> None:
-        nonlocal gen_error
-        for _ in range(n):
-            if gen_error is not None:
-                return
-            try:
-                item = next(it)
-            except StopIteration:
-                return
-            except Exception as e:  # noqa: BLE001 - error generando muestras
-                gen_error = e
-                return
-            futures.add(executor.submit(fn, item))
-
-    _fill(max_in_flight)
-    while futures:
-        done, futures = wait(futures, return_when=FIRST_COMPLETED)
-        for fut in done:
-            yield fut.result()
-        _fill(len(done))
-    if gen_error is not None:
-        raise gen_error
 
 
 def run(

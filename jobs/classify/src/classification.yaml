@@ -1,0 +1,21 @@
+# Prompt + taxonomia de clasificacion de escena vial (job classify).
+# Fuente unica de la verdad: editar aqui los valores permitidos o el prompt.
+# En el prompt, {campo} se sustituye por la lista de valores de ese campo (asi el
+# prompt y la taxonomia no se desincronizan). El ultimo valor de cada campo es el
+# comodin al que el validador normaliza lo que se salga del conjunto.
+
+prompt: |
+  You are labeling a forward-facing driving/road scene image for an autonomous-driving
+  dataset. Classify the image and respond with ONLY the JSON object (no prose), with
+  exactly these fields, choosing one value from the allowed set for each:
+  - weather: one of {weather}
+  - scene: one of {scene}
+  - timeofday: one of {timeofday}
+  - road_geometry: one of {road_geometry} ('curve' if the ego lane/road bends, else 'straight')
+  If a field cannot be determined, use 'unknown'.
+
+fields:
+  weather: [clear, cloudy, rain, snow, fog, unknown]
+  scene: [highway, city, residential, rural, tunnel, parking, unknown]
+  timeofday: [day, night, dawn_dusk, unknown]
+  road_geometry: [straight, curve, unknown]
